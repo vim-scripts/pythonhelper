@@ -1,12 +1,12 @@
 " File: pythonhelper.vim
 " Author: Michal Vitecek <fuf-at-mageo-dot-cz>
-" Version: 0.7
+" Version: 0.72
 " Last Modified: Oct 2, 2002
 "
 " Overview
 " --------
 " Vim script to help moving around in larger Python source files. It displays
-" current class, method or function the cursor is placed in in the status
+" current class, method or function the cursor is placed in on the status
 " line for every python file. It's more clever than Yegappan Lakshmanan's
 " taglist.vim because it takes into account indetation and comments to
 " determine what tag the cursor is placed in.
@@ -21,11 +21,11 @@
 " The exuberant ctags can be downloaded from http://ctags.sourceforge.net/ and
 " should be reasonably new version (tested with 5.3).
 "
-" Note: The script doesn't display current tag on the status line only in
-" NORMAL mode. This is because CursorHold event is fired up only in this mode.
-" However if you badly need to know what tag you are on even in INSERT or
+" Note: The script displays current tag on the status line only in NORMAL
+" mode. This is because CursorHold event is fired up only in this mode.
+" However if you badly need to know what tag you are in even in INSERT or
 " VISUAL mode, contact me on the above specified email address and I'll send
-" you patch that enables it.
+" you a patch that enables firing up CursorHold event in those modes as well.
 "
 " Installation
 " ------------
@@ -44,12 +44,14 @@ import os
 import popen2
 import time
 import sys
+import re
 # }}}
 
 
 # CTAGS program and parameters {{{
 CTAGS_PROGRAM = "/usr/local/bin/ctags"
 CTAGS_PARAMETERS = "--language-force=python --format=2 --sort=0 --fields=+nK -L - -f - "
+CTAGS_OUTPUT_RE = re.compile("([^\t]+).*\t\/\^(.+)\$\/;\"\t([^\t]+)\tline:([0-9]+)(\t([^\t]+))?\n")
 # }}}
 
 # global dictionaries of tags and their line numbers, keys are buffer numbers {{{
@@ -107,7 +109,7 @@ def getTags(bufferNumber, changedTick):
     # }}}
 
     # CODE {{{
-    global	CTAGS_PROGRAM, CTAGS_PARAMETERS
+    global	CTAGS_PROGRAM, CTAGS_PARAMETERS, CTAGS_OUTPUT_RE
     global	TAGLINENUMBERS, TAGS, BUFFERTICKS
 
 
@@ -122,7 +124,7 @@ def getTags(bufferNumber, changedTick):
     row, col = currentWindow.cursor
 
     # create a temporary file with the current content of the buffer {{{
-    fileName = "/tmp/.%s.%u.ph" % (os.path.basename(currentBuffer.name), os.getpid(),)
+    fileName = "/tmp/.%u.%u.ph" % (bufferNumber, os.getpid(),)
     f = open(fileName, "w")
 
     for line in currentBuffer:
@@ -138,7 +140,7 @@ def getTags(bufferNumber, changedTick):
 	ctagsInPut.close()
     except:
 	os.unlink(fileName)
-	return
+	return None
     # }}}
 
     # parse the ctags' output {{{
@@ -156,23 +158,28 @@ def getTags(bufferNumber, changedTick):
         # }}}
 	
         # split the line into parts and parse the data {{{
-        # the format is: [0]tagName [1]fileName [2]tagLine [3]tagType [4]tagLineNumber [[5]tagOwner]
-	tagData = line.split('\t')
-	name = tagData[0]
+        # the ctags format is: tagName fileName tagLine tagType tagLineNumber[ tagOwner]
+	tagData = CTAGS_OUTPUT_RE.match(line)
+        # if there's no match, there must be a syntax error in the python file (and ctags parsed it incorrectly) {{{
+        if (tagData == None):
+            print "pythonhelper: WARNING: The file contains syntax errors."
+            continue
+        # }}}
+	name = tagData.group(1)
         # get the tag's indentation {{{
 	start = 2
 	j = 2
-	while ((j < len(tagData[2])) and (tagData[2][j].isspace())):
-	    if (tagData[2][j] == '\t'):
+	while ((j < len(tagData.group(2))) and (tagData.group(2)[j].isspace())):
+	    if (tagData.group(2)[j] == '\t'):
 		start += 8
 	    else:
 		start += 1
 	    j += 1
         # }}}
-	type = tagData[3]
-	line = int(tagData[4][5:])
-	if (len(tagData) == 6):
-	    owner = tagData[5].strip()
+	type = tagData.group(3)
+	line = int(tagData.group(4))
+	if (len(tagData.groups()) == 6):
+	    owner = tagData.group(6)
 	else:
 	    owner = None
         # }}}
@@ -211,8 +218,14 @@ def findTag(bufferNumber, changedTick):
 
     # CODE {{{
     try:
-	# get the tags data for the current buffer
-	tagLineNumbers, tags = getTags(bufferNumber, changedTick)
+	# get the tags data for the current buffer {{{
+	tagData = getTags(bufferNumber, changedTick)
+        # if tagData == None, then running ctags failed {{{
+        if (tagData == None):
+            return
+        # }}}
+	tagLineNumbers, tags = tagData
+        # }}}
 
 	# link to vim internal data {{{
 	currentBuffer = vim.current.buffer
@@ -303,7 +316,7 @@ def deleteTags(bufferNumber):
     # }}}
 
     # CODE {{{
-    global TAGS, TAGLINENUMBERS, BUFFERTICKS
+    global      TAGS, TAGLINENUMBERS, BUFFERTICKS
     
     try:
         del TAGS[bufferNumber]
@@ -319,7 +332,7 @@ EOS
 
 function! PHCursorHold()
     " only python is supported {{{
-    if (exists('b:current_syntax') && (b:current_syntax != 'python'))
+    if (!exists('b:current_syntax') || (b:current_syntax != 'python'))
 	let w:PHStatusLine = ''
 	return
     endif
@@ -331,14 +344,19 @@ endfunction
 
 
 function! PHBufferDelete()
+    " set PHStatusLine for this window to empty string
+    let w:PHStatusLine = ""
+    
     " call python function deleteTags() with the cur
     execute 'python deleteTags(' . expand("<abuf>") . ')'
 endfunction
 
 
 function! TagInStatusLine()
+    " return value of w:PHStatusLine in case it's set
     if (exists("w:PHStatusLine"))
         return w:PHStatusLine
+    " otherwise just return empty string
     else
         return ""
     endif
@@ -347,7 +365,7 @@ endfunction
 
 
 " autocommands binding
-autocmd CursorHold * silent call PHCursorHold()
+autocmd CursorHold * call PHCursorHold()
 autocmd BufDelete * silent call PHBufferDelete()
 
 " time that determines after how long time of no activity the CursorHold event
