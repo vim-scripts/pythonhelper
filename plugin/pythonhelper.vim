@@ -1,7 +1,7 @@
 " File: pythonhelper.vim
 " Author: Michal Vitecek <fuf-at-mageo-dot-cz>
-" Version: 0.80
-" Last Modified: Oct 19, 2002
+" Version: 0.81
+" Last Modified: Oct 24, 2002
 "
 " Overview
 " --------
@@ -71,6 +71,7 @@ class PythonTag(object):
         TAGTYPE_FUNCTION : "function",
     }
     # }}}
+
     # }}}
 
 
@@ -121,7 +122,7 @@ class PythonTag(object):
 # }}}
         
 
-# SimplePythonTagsParser() {{{ 
+# class SimplePythonTagsParser() {{{ 
 class SimplePythonTagsParser(object):
     # DOC {{{
     """Provides a simple python tag parser. Returns list of PythonTag()
@@ -131,6 +132,7 @@ class SimplePythonTagsParser(object):
 
 
     # STATIC VARIABLES {{{
+
     # how many chars a single tab represents (visually)
     TABSIZE                     = 8
     
@@ -140,6 +142,7 @@ class SimplePythonTagsParser(object):
     classRE                     = re.compile('class[ \t]+([^(:]+).*')
     # regexp used to get method or function name
     methodRE                    = re.compile('def[ \t]+([^(]+).*')
+
     # }}}
 
 
@@ -170,6 +173,9 @@ class SimplePythonTagsParser(object):
     
     def getTags(self):
         # DOC {{{
+        """Determines all the tags for the buffer. Returns tuple in format
+        (tagLineNumbers, tags,).
+        """
         # }}}
 
         # CODE {{{
@@ -512,8 +518,8 @@ def findTag(bufferNumber, changedTick):
                         continue
                     # }}}
                     # }}}
-                    # if the line's indentation starts before the nearest tag's one, the tag is wrong {{{
-		    if (lineStart < tags[nearestLineNumber].indentLevel):
+                    # if the line's indentation starts before or at the nearest tag's one, the tag is wrong {{{
+		    if (lineStart <= tags[nearestLineNumber].indentLevel):
 			nearestLineNumber = -1
 			break
                     # }}}
@@ -569,6 +575,7 @@ def deleteTags(bufferNumber):
 
 EOS
 
+" VIM functions {{{
 
 function! PHCursorHold()
     " only python is supported {{{
@@ -602,7 +609,10 @@ function! TagInStatusLine()
     endif
 endfunction
 
+" }}}
 
+
+" event binding, vim customizing {{{
 
 " autocommands binding
 autocmd CursorHold * call PHCursorHold()
@@ -621,5 +631,6 @@ set laststatus=2
 " set the status line to display some useful information
 set stl=%-f%r\ %2*%m%*\ \ \ \ %1*%{TagInStatusLine()}%*%=[%l:%c]\ \ \ \ [buf\ %n]
 
+" }}}
 
 " vim:foldmethod=marker
