@@ -1,7 +1,7 @@
 " File: pythonhelper.vim
 " Author: Michal Vitecek <fuf-at-mageo-dot-cz>
-" Version: 0.72
-" Last Modified: Oct 2, 2002
+" Version: 0.80
+" Last Modified: Oct 19, 2002
 "
 " Overview
 " --------
@@ -13,13 +13,10 @@
 "
 " Requirements
 " ------------
-" This script needs VIM compiled with Python interpreter and relies on
-" exuberant ctags utility to generate the tag listing. You can determine
-" whether your VIM has Python support by issuing command :ver and looking for
-" +python in the list of features.
-"
-" The exuberant ctags can be downloaded from http://ctags.sourceforge.net/ and
-" should be reasonably new version (tested with 5.3).
+" This script needs only VIM compiled with Python interpreter. It doesn't rely
+" on exuberant ctags utility. You can determine whether your VIM has Python
+" support by issuing command :ver and looking for +python in the list of
+" features.
 "
 " Note: The script displays current tag on the status line only in NORMAL
 " mode. This is because CursorHold event is fired up only in this mode.
@@ -32,32 +29,360 @@
 " 1. Make sure your Vim has python feature on (+python). If not, you will need
 "    to recompile it with --with-pythoninterp option to the configure script
 " 2. Copy script pythonhelper.vim to the $HOME/.vim/plugin directory
-" 3. Edit the script and modify the location of your exuberant tags utility
-"    (variable CTAGS_PROGRAM).
-" 4. Run Vim and open any python file.
+" 3. Run Vim and open any python file.
 " 
 python << EOS
 
 # import of required modules {{{
 import vim
-import os
-import popen2
 import time
 import sys
 import re
 # }}}
 
 
-# CTAGS program and parameters {{{
-CTAGS_PROGRAM = "/usr/local/bin/ctags"
-CTAGS_PARAMETERS = "--language-force=python --format=2 --sort=0 --fields=+nK -L - -f - "
-CTAGS_OUTPUT_RE = re.compile("([^\t]+).*\t\/\^(.+)\$\/;\"\t([^\t]+)\tline:([0-9]+)(\t([^\t]+))?\n")
-# }}}
-
 # global dictionaries of tags and their line numbers, keys are buffer numbers {{{
 TAGS = {}
 TAGLINENUMBERS = {}
 BUFFERTICKS = {}
+# }}}
+
+
+# class PythonTag() {{{
+class PythonTag(object):
+    # DOC {{{
+    """A simple storage class representing a python tag.
+    """
+    # }}}
+
+
+    # STATIC VARIABLES {{{
+    
+    # tag type IDs {{{
+    TAGTYPE_CLASS       = 0
+    TAGTYPE_METHOD      = 1
+    TAGTYPE_FUNCTION    = 2
+    # }}}
+
+    # tag type names {{{
+    typeName = {
+        TAGTYPE_CLASS    : "class",
+        TAGTYPE_METHOD   : "method",
+        TAGTYPE_FUNCTION : "function",
+    }
+    # }}}
+    # }}}
+
+
+    # METHODS {{{
+    
+    def __init__(self, type, name, fullName, lineNumber, indentLevel):
+        # DOC {{{
+        """Initializes instances of class PythonTag().
+
+        Parameters
+            
+            type -- tag type
+
+            name -- short tag name
+
+            fullName -- full tag name (in dotted notation)
+
+            lineNumber -- line number on which the tag starts
+
+            indentLevel -- indentation level of the tag
+        """
+        # }}}
+
+        # CODE {{{
+        self.type = type
+        self.name = name
+        self.fullName = fullName
+        self.lineNumber = lineNumber
+        self.indentLevel = indentLevel
+        # }}}
+
+
+    def __str__(self):
+        # DOC {{{
+        """Returns a string representation of the tag.
+        """
+        # }}}
+
+        # CODE {{{
+        return "%s (%s) [%s, %u, %u]" % (self.name, PythonTag.typeName[self.type],
+                                         self.fullName, self.lineNumber, self.indentLevel,)
+        # }}}
+
+    __repr__ = __str__
+
+
+    # }}}
+# }}}
+        
+
+# SimplePythonTagsParser() {{{ 
+class SimplePythonTagsParser(object):
+    # DOC {{{
+    """Provides a simple python tag parser. Returns list of PythonTag()
+    instances.
+    """
+    # }}}
+
+
+    # STATIC VARIABLES {{{
+    # how many chars a single tab represents (visually)
+    TABSIZE                     = 8
+    
+    # regexp used to get indentation and strip comments
+    commentsIndentStripRE       = re.compile('([ \t]*)([^\n#]*).*')
+    # regexp used to get class name
+    classRE                     = re.compile('class[ \t]+([^(:]+).*')
+    # regexp used to get method or function name
+    methodRE                    = re.compile('def[ \t]+([^(]+).*')
+    # }}}
+
+
+    # METHODS {{{
+    
+    def __init__(self, source):
+        # DOC {{{
+        """Initializes the instance of class SimplePythonTagsParser().
+
+        Parameters
+
+            source -- source for which the tags will be generated. It must
+                provide callable method readline (i.e. as file objects do).
+        """
+        # }}}
+
+        # CODE {{{
+        # make sure source has readline() method {{{
+        if (not(hasattr(source, 'readline') and
+                callable(source.readline))):
+            raise AttributeError("Source must have callable readline method.")
+        # }}}
+                
+        # remember what the source is
+        self.source = source
+        # }}}
+
+    
+    def getTags(self):
+        # DOC {{{
+        # }}}
+
+        # CODE {{{
+        tagLineNumbers = []
+        tags = {}
+
+        # list (stack) of all currently active tags
+        tagsStack = []
+        
+        lineNumber = 0
+        while 1:
+            # get next line
+            line = self.source.readline()
+
+            # finish if this is the end of the source {{{
+            if (line == ''):
+                break
+            # }}}
+
+            lineNumber += 1
+            lineMatch = self.commentsIndentStripRE.match(line)
+            lineContents = lineMatch.group(2)
+            # class tag {{{
+            tagMatch = self.classRE.match(lineContents)
+            if (tagMatch):
+                currentTag = self.getPythonTag(tagsStack, lineNumber, lineMatch.group(1),
+                                               tagMatch.group(1), self.tagClassTypeDecidingMethod)
+                tagLineNumbers.append(lineNumber)
+                tags[lineNumber] = currentTag
+            # }}}
+            # function/method/none tag {{{
+            else:
+                tagMatch = self.methodRE.match(lineContents)
+                if (tagMatch):
+                    currentTag = self.getPythonTag(tagsStack, lineNumber, lineMatch.group(1),
+                                                   tagMatch.group(1), self.tagFunctionTypeDecidingMethod)
+                    tagLineNumbers.append(lineNumber)
+                    tags[lineNumber] = currentTag
+            # }}}
+
+        # return the tags data for the source
+        return (tagLineNumbers, tags,)
+        # }}}
+
+
+    def getPreviousTag(self, tagsStack):
+        # DOC {{{
+        """Returns the previous tag (instance of PythonTag()) from the
+        specified tag list if possible. If not, returns None.
+
+        Parameters
+
+            tagsStack -- list (stack) of currently active PythonTag() instances
+        """
+        # }}}
+
+        # CODE {{{
+        if (len(tagsStack)):
+            previousTag = tagsStack[-1]
+        else:
+            previousTag = None
+         
+        # return the tag
+        return previousTag
+        # }}}
+
+
+    def computeIndentLevel(self, indentChars):
+        # DOC {{{
+        """Computes indent level from the specified string.
+
+        Parameters
+
+            indentChars -- white space before any other character on line
+        """
+        # }}}
+
+        # CODE {{{
+        indentLevel = 0
+        for char in indentChars:
+            if (char == '\t'):
+                indentLevel += self.TABSIZE
+            else:
+                indentLevel += 1
+
+        return indentLevel
+        # }}}
+
+
+    def getPythonTag(self, tagsStack, lineNumber, indentChars, tagName, tagTypeDecidingMethod):
+        # DOC {{{
+        """Returns instance of PythonTag() based on the specified data.
+
+        Parameters
+
+            tagsStack -- list (stack) of tags currently active. Note: Modified
+                in this method!
+
+            lineNumber -- current line number
+
+            indentChars -- characters making up the indentation level of the
+                current tag
+
+            tagName -- short name of the current tag
+
+            tagTypeDecidingMethod -- reference to method that is called to
+                determine type of the current tag
+        """
+        # }}}
+
+        # CODE {{{
+        indentLevel = self.computeIndentLevel(indentChars)
+        previousTag = self.getPreviousTag(tagsStack)
+        # code for enclosed tag {{{
+        while (previousTag):
+            if (previousTag.indentLevel >= indentLevel):
+                del tagsStack[-1]
+            else:
+                tagType = tagTypeDecidingMethod(previousTag.type)
+                tag = PythonTag(tagType, tagName, "%s.%s" % (previousTag.fullName, tagName,), lineNumber, indentLevel)
+                tagsStack.append(tag)
+                return tag
+            previousTag = self.getPreviousTag(tagsStack)
+        # }}}
+        # code for tag in top indent level {{{
+        else:
+            tagType = tagTypeDecidingMethod(None)
+            tag = PythonTag(tagType, tagName, tagName, lineNumber, indentLevel)
+            tagsStack.append(tag)
+            return tag
+        # }}}
+        # }}}
+
+
+    def tagClassTypeDecidingMethod(self, previousTagsType):
+        # DOC {{{
+        """Returns tag type of the current tag based on its previous tag (super
+        tag) for classes.
+        """
+        # }}}
+
+        # CODE {{{
+        return PythonTag.TAGTYPE_CLASS
+        # }}}
+
+
+    def tagFunctionTypeDecidingMethod(self, previousTagsType):
+        # DOC {{{
+        """Returns tag type of the current tag based on its previous tag (super
+        tag) for functions/methods.
+        """
+        # }}}
+
+        # CODE {{{
+        if (previousTagsType == PythonTag.TAGTYPE_CLASS):
+            return PythonTag.TAGTYPE_METHOD
+        else:
+            return PythonTag.TAGTYPE_FUNCTION
+        # }}}
+
+
+    # }}}
+# }}}
+
+
+# class VimReadlineBuffer() {{{
+class VimReadlineBuffer(object):
+    # DOC {{{
+    """A simple wrapper class around vim's buffer that provides readline
+    method.
+    """
+    # }}}
+
+
+    # METHODS {{{
+
+    def __init__(self, vimBuffer):
+        # DOC {{{
+        """Initializes the instance of class VimReadlineBuffer().
+
+        Parameters
+
+            vimBuffer -- VIM's buffer
+        """
+        # }}}
+
+        # CODE {{{
+        self.vimBuffer = vimBuffer
+        self.currentLine = -1
+        self.bufferLines = len(vimBuffer)
+        # }}}
+
+
+    def readline(self):
+        # DOC {{{
+        """Returns next line from the buffer. If all the buffer has been read,
+        returns empty string.
+        """
+        # }}}
+
+        # CODE {{{
+        self.currentLine += 1
+
+        # notify end of file if we reached beyond the last line {{{
+        if (self.currentLine == self.bufferLines):
+            return ''
+        # }}}
+
+        # return the line with added newline (vim stores the lines without newline)
+        return "%s\n" % (self.vimBuffer[self.currentLine],)
+        # }}}
+    
+    # }}}
 # }}}
 
 
@@ -95,9 +420,8 @@ def getNearestLineIndex(row, tagLineNumbers):
 
 def getTags(bufferNumber, changedTick):
     # DOC {{{
-    """Reads the tags for the specified buffer number. It does so by executing
-    the CTAGS program and parsing its output. Returns tuple
-    (taglinenumber[buffer], tags[buffer]).
+    """Reads the tags for the specified buffer number. Returns tuple
+    (taglinenumber[buffer], tags[buffer],).
 
     Parameters
 
@@ -109,87 +433,16 @@ def getTags(bufferNumber, changedTick):
     # }}}
 
     # CODE {{{
-    global	CTAGS_PROGRAM, CTAGS_PARAMETERS, CTAGS_OUTPUT_RE
     global	TAGLINENUMBERS, TAGS, BUFFERTICKS
-
 
     # return immediately if there's no need to update the tags {{{
     if ((BUFFERTICKS.has_key(bufferNumber)) and (BUFFERTICKS[bufferNumber] == changedTick)):
 	return (TAGLINENUMBERS[bufferNumber], TAGS[bufferNumber],)
     # }}}
 
-    # read the tags and fill the global variables {{{
-    currentBuffer = vim.current.buffer
-    currentWindow = vim.current.window
-    row, col = currentWindow.cursor
-
-    # create a temporary file with the current content of the buffer {{{
-    fileName = "/tmp/.%u.%u.ph" % (bufferNumber, os.getpid(),)
-    f = open(fileName, "w")
-
-    for line in currentBuffer:
-	f.write(line)
-	f.write('\n')
-    f.close()
-    # }}}
-
-    # run ctags on it {{{
-    try:
-	ctagsOutPut, ctagsInPut = popen2.popen4("%s %s" % (CTAGS_PROGRAM, CTAGS_PARAMETERS,))
-	ctagsInPut.write(fileName + "\n")
-	ctagsInPut.close()
-    except:
-	os.unlink(fileName)
-	return None
-    # }}}
-
-    # parse the ctags' output {{{
-    tagLineNumbers = []
-    tags = {}
-    while 1:
-	line = ctagsOutPut.readline()
-        # if empty line has been read, it's the end of the file {{{
-	if (line == ''):
-	    break
-        # }}}
-        # if the line starts with !, then it's a comment line {{{
-	if (line[0] == '!'):
-	    continue
-        # }}}
-	
-        # split the line into parts and parse the data {{{
-        # the ctags format is: tagName fileName tagLine tagType tagLineNumber[ tagOwner]
-	tagData = CTAGS_OUTPUT_RE.match(line)
-        # if there's no match, there must be a syntax error in the python file (and ctags parsed it incorrectly) {{{
-        if (tagData == None):
-            print "pythonhelper: WARNING: The file contains syntax errors."
-            continue
-        # }}}
-	name = tagData.group(1)
-        # get the tag's indentation {{{
-	start = 2
-	j = 2
-	while ((j < len(tagData.group(2))) and (tagData.group(2)[j].isspace())):
-	    if (tagData.group(2)[j] == '\t'):
-		start += 8
-	    else:
-		start += 1
-	    j += 1
-        # }}}
-	type = tagData.group(3)
-	line = int(tagData.group(4))
-	if (len(tagData.groups()) == 6):
-	    owner = tagData.group(6)
-	else:
-	    owner = None
-        # }}}
-	tagLineNumbers.append(line)
-	tags[line] = (name, type, owner, start)
-    ctagsOutPut.close()
-    # }}}
-
-    # clean up the now unnecessary stuff {{{
-    os.unlink(fileName)
+    # get the tags {{{
+    simpleTagsParser = SimplePythonTagsParser(VimReadlineBuffer(vim.current.buffer))
+    tagLineNumbers, tags = simpleTagsParser.getTags()
     # }}}
 
     # update the global variables {{{
@@ -197,9 +450,9 @@ def getTags(bufferNumber, changedTick):
     TAGLINENUMBERS[bufferNumber] = tagLineNumbers
     BUFFERTICKS[bufferNumber] = changedTick
     # }}}
-    # }}}
 
-    return (TAGLINENUMBERS[bufferNumber], TAGS[bufferNumber],)
+    # return the tags data
+    return (tagLineNumbers, tags,)
     # }}}
 
 
@@ -219,12 +472,7 @@ def findTag(bufferNumber, changedTick):
     # CODE {{{
     try:
 	# get the tags data for the current buffer {{{
-	tagData = getTags(bufferNumber, changedTick)
-        # if tagData == None, then running ctags failed {{{
-        if (tagData == None):
-            return
-        # }}}
-	tagLineNumbers, tags = tagData
+	tagLineNumbers, tags = getTags(bufferNumber, changedTick)
         # }}}
 
 	# link to vim internal data {{{
@@ -251,7 +499,7 @@ def findTag(bufferNumber, changedTick):
 		    j = 0
 		    while ((j < len(line)) and (line[j].isspace())):
 			if (line[j] == '\t'):
-			    lineStart += 8
+			    lineStart += SimplePythonTagsParser.TABSIZE
 			else:
 			    lineStart += 1
 			j += 1
@@ -265,7 +513,7 @@ def findTag(bufferNumber, changedTick):
                     # }}}
                     # }}}
                     # if the line's indentation starts before the nearest tag's one, the tag is wrong {{{
-		    if (lineStart < tags[nearestLineNumber][3]):
+		    if (lineStart < tags[nearestLineNumber].indentLevel):
 			nearestLineNumber = -1
 			break
                     # }}}
@@ -279,15 +527,7 @@ def findTag(bufferNumber, changedTick):
 	tagDescription = ""
 	if (nearestLineNumber > -1):
 	    tagInfo = tags[nearestLineNumber]
-	    # use the owner if any exists {{{
-	    if (tagInfo[2] != None):
-		fullTagName = "%s.%s()" % (tagInfo[2].split(':')[1], tagInfo[0],)
-	    # }}}
-	    # otherwise use just the tag name {{{
-	    else:
-		fullTagName = tagInfo[0]
-	    # }}}
-	    tagDescription = "[in %s (%s)]" % (fullTagName, tagInfo[1],)
+	    tagDescription = "[in %s (%s)]" % (tagInfo.fullName, PythonTag.typeName[tagInfo.type],)
 	# }}}
 
 	# update the variable for the status line so it will be updated next time
@@ -380,3 +620,6 @@ highlight User2 gui=bold guifg=black guibg=red
 set laststatus=2
 " set the status line to display some useful information
 set stl=%-f%r\ %2*%m%*\ \ \ \ %1*%{TagInStatusLine()}%*%=[%l:%c]\ \ \ \ [buf\ %n]
+
+
+" vim:foldmethod=marker
