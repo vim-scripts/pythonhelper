@@ -336,10 +336,18 @@ function! PHBufferDelete()
 endfunction
 
 
+function! TagInStatusLine()
+    if (exists("w:PHStatusLine"))
+        return w:PHStatusLine
+    else
+        return ""
+    endif
+endfunction
+
+
 
 " autocommands binding
 autocmd CursorHold * silent call PHCursorHold()
-autocmd BufWinEnter * silent call PHCursorHold()
 autocmd BufDelete * silent call PHBufferDelete()
 
 " time that determines after how long time of no activity the CursorHold event
@@ -352,7 +360,5 @@ highlight User1 gui=bold guifg=cyan guibg=black
 highlight User2 gui=bold guifg=black guibg=red
 " the status line will be displayed for every window
 set laststatus=2
-" set the status variable for the current window
-let w:PHStatusLine = ''
 " set the status line to display some useful information
-set stl=%-f%r\ %2*%m%*\ \ \ \ %1*%{w:PHStatusLine}%*%=[%l:%c]\ \ \ \ [buf\ %n]
+set stl=%-f%r\ %2*%m%*\ \ \ \ %1*%{TagInStatusLine()}%*%=[%l:%c]\ \ \ \ [buf\ %n]
